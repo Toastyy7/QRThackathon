@@ -1,0 +1,398 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+string ltrim(const string &);
+string rtrim(const string &);
+
+namespace square_packing {
+using I = long long;
+using Area = __int128;
+using Point = pair<I, I>;
+using Clock = chrono::steady_clock;
+
+struct Rect {
+    I x, y, r, b;
+};
+
+bool contains(const Rect& a, const Rect& b) {
+    return a.x <= b.x && a.y <= b.y && a.r >= b.r && a.b >= b.b;
+}
+
+bool overlaps(const Rect& a, const Rect& b) {
+    return a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b;
+}
+
+struct Solver {
+    vector<I> sides;
+    vector<int> sorted;
+    vector<Point> best, points;
+    I largest = 0, total_side = 0, best_width = 0, best_height = 0;
+    Area total_area = 0, best_area = Area(1) << 126;
+    Clock::time_point deadline;
+    uint64_t rng = 0x9e3779b97f4a7c15ULL;
+
+    uint64_t random() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        return rng;
+    }
+
+    void save(I width, I height) {
+        Area area = Area(width) * height;
+        if (area < best_area) {
+            best_area = area;
+            best_width = width;
+            best_height = height;
+            best = points;
+        }
+    }
+
+    void shelves(I width) {
+        struct Shelf { I x, y; };
+        vector<Shelf> rows;
+        multimap<I, int> space;
+        I height = 0, used_width = 0;
+
+        for (int id : sorted) {
+            I s = sides[id];
+            auto it = space.lower_bound(s);
+            int row;
+
+            if (it == space.end()) {
+                row = int(rows.size());
+                rows.push_back({0, height});
+                height += s;
+            } else {
+                row = it->second;
+                space.erase(it);
+            }
+
+            Shelf& shelf = rows[row];
+            points[id] = {shelf.x, shelf.y};
+            shelf.x += s;
+            used_width = max(used_width, shelf.x);
+            if (shelf.x < width) space.emplace(width - shelf.x, row);
+        }
+
+        save(used_width, height);
+    }
+
+    void maxrects(I width, I height, const vector<int>& order, int rule) {
+        if (height < largest || Area(width) * height < total_area) return;
+
+        vector<Rect> free{{0, 0, width, height}}, next;
+        I used_width = 0, used_height = 0;
+        int placed = 0;
+
+        for (int id : order) {
+            if ((placed++ % 16 == 0 && Clock::now() >= deadline) ||
+                free.size() > 700) return;
+
+            I s = sides[id];
+            I inf = numeric_limits<I>::max();
+            Point score{inf, inf};
+            Rect tile{};
+
+            for (const Rect& r : free) {
+                I dx = r.r - r.x - s, dy = r.b - r.y - s;
+                if (dx < 0 || dy < 0) continue;
+
+                Point candidate;
+                switch (rule) {
+                    case 0: candidate = {r.y, r.x}; break;
+                    case 1: candidate = {min(dx, dy), max(dx, dy)}; break;
+                    case 2: candidate = {max(dx, dy), min(dx, dy)}; break;
+                    default:
+                        candidate = {max(used_height, r.y + s), min(dx, dy)};
+                }
+
+                if (candidate < score ||
+                    (candidate == score && Point{r.y, r.x} < Point{tile.y, tile.x})) {
+                    score = candidate;
+                    tile = {r.x, r.y, r.x + s, r.y + s};
+                }
+            }
+
+            if (tile.r == 0) return;
+            points[id] = {tile.x, tile.y};
+            used_width = max(used_width, tile.r);
+            used_height = max(used_height, tile.b);
+
+            next.clear();
+            for (const Rect& r : free) {
+                if (!overlaps(r, tile)) {
+                    next.push_back(r);
+                    continue;
+                }
+
+                if (r.x < tile.x) next.push_back({r.x, r.y, tile.x, r.b});
+                if (tile.r < r.r) next.push_back({tile.r, r.y, r.r, r.b});
+                if (r.y < tile.y) next.push_back({r.x, r.y, r.r, tile.y});
+                if (tile.b < r.b) next.push_back({r.x, tile.b, r.r, r.b});
+            }
+
+            for (size_t i = 0; i < next.size();) {
+                bool redundant = false;
+                for (size_t j = 0; j < next.size(); ++j) {
+                    if (i != j && contains(next[j], next[i])) {
+                        redundant = true;
+                        break;
+                    }
+                }
+
+                if (redundant) {
+                    next[i] = next.back();
+                    next.pop_back();
+                } else {
+                    ++i;
+                }
+            }
+
+            free.swap(next);
+        }
+
+        save(used_width, used_height);
+    }
+
+    bool place_exact(int k, const vector<I>& sums, I width, I height,
+                     vector<Rect>& placed, int& budget) {
+        if (k == int(sorted.size())) return true;
+        if (budget <= 0) return false;
+
+        I s = sides[sorted[k]];
+        Point first{0, 0};
+        if (k && sides[sorted[k - 1]] == s) {
+            first = {placed[k - 1].y, placed[k - 1].x};
+        }
+
+        for (I y : sums) {
+            if (y + s > height) break;
+            for (I x : sums) {
+                if (x + s > width) break;
+                if (Point{y, x} < first) continue;
+                if (--budget <= 0) return false;
+
+                Rect tile{x, y, x + s, y + s};
+                bool clear = true;
+                for (int j = 0; j < k; ++j) {
+                    if (overlaps(tile, placed[j])) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (!clear) continue;
+
+                placed[k] = tile;
+                points[sorted[k]] = {x, y};
+                if (place_exact(k + 1, sums, width, height, placed, budget)) {
+                    return true;
+                }
+                if (budget <= 0) return false;
+            }
+        }
+        return false;
+    }
+
+    bool exact(const vector<I>& sums) {
+        int budget = 500000;
+        vector<Rect> placed(sides.size());
+
+        for (I w : sums) {
+            if (w < largest) continue;
+            if (Area(w) * w >= best_area) break;
+
+            I min_h = max(w, I((total_area + w - 1) / w));
+            if (sides.size() > 1 && w < largest + sides[sorted[1]]) {
+                min_h = max(min_h, largest + sides[sorted[1]]);
+            }
+
+            for (auto it = lower_bound(sums.begin(), sums.end(), min_h);
+                 it != sums.end() && Area(w) * *it < best_area; ++it) {
+                if (Clock::now() >= deadline || budget <= 0) return false;
+                if (place_exact(0, sums, w, *it, placed, budget)) {
+                    save(w, *it);
+                    break;
+                }
+            }
+        }
+        return budget > 0;
+    }
+
+    explicit Solver(const vector<int>& input)
+        : sides(input.begin(), input.end()), sorted(input.size()), points(input.size()) {
+        iota(sorted.begin(), sorted.end(), 0);
+        sort(sorted.begin(), sorted.end(),
+             [&](int a, int b) { return sides[a] > sides[b]; });
+
+        largest = sides[sorted.front()];
+        for (I s : sides) {
+            total_area += Area(s) * s;
+            total_side += s;
+        }
+    }
+
+    void search() {
+        shelves(largest);
+        if (best_area == total_area) return;
+
+        deadline = Clock::now() + chrono::milliseconds(650);
+        I root = I(sqrt(static_cast<long double>(total_area)));
+        vector<I> widths;
+        auto add = [&](I w) {
+            widths.push_back(max(largest, min(total_side, w)));
+        };
+
+        add(largest);
+        add(total_side);
+        for (int i = 0; i < 49; ++i) add(I(root * exp2((i - 24) / 12.0L)));
+        for (int i = -16; i <= 16; ++i) add(root + i);
+
+        I prefix = 0;
+        for (size_t i = 0; i < min<size_t>(16, sorted.size()); ++i) {
+            prefix += sides[sorted[i]];
+            add(prefix);
+            add(largest + sides[sorted[i]]);
+        }
+
+        vector<I> sums{0};
+        if (sides.size() <= 9) {
+            for (I s : sides) {
+                size_t count = sums.size();
+                for (size_t j = 0; j < count; ++j) sums.push_back(sums[j] + s);
+            }
+            sort(sums.begin(), sums.end());
+            sums.erase(unique(sums.begin(), sums.end()), sums.end());
+            for (I w : sums) if (w >= largest) add(w);
+        }
+
+        sort(widths.begin(), widths.end());
+        widths.erase(unique(widths.begin(), widths.end()), widths.end());
+        sort(widths.begin(), widths.end(), [&](I a, I b) {
+            return abs(a - root) < abs(b - root);
+        });
+
+        for (I w : widths) {
+            shelves(w);
+            if (best_area == total_area || Clock::now() >= deadline) return;
+        }
+        if (sides.size() <= 9 && exact(sums)) return;
+
+        vector<int> order = sorted;
+        const int trials = sides.size() > 2500 ? 120 : 1800;
+
+        for (int trial = 0; trial < trials && Clock::now() < deadline; ++trial) {
+            I w;
+            int rule;
+
+            if (trial < int(widths.size()) * 2) {
+                w = widths[trial / 2];
+                rule = (trial % 2 == 0) ? 0 : 3;
+            } else {
+                I base = (random() & 1) ? best_width : best_height;
+                switch (random() % 4) {
+                    case 0: w = base; break;
+                    case 1: w = widths[random() % widths.size()]; break;
+                    default: {
+                        I spread = max<I>(1, min(largest, base / 7));
+                        w = base + I(random() % (2 * spread + 1)) - spread;
+                        break;
+                    }
+                }
+
+                w = max(largest, min(total_side, w));
+                rule = int(random() % 4);
+                order = sorted;
+
+                if (trial % 5 != 0) {
+                    int n = int(order.size());
+                    for (int j = 0, swaps = max(1, n / 7); j < swaps; ++j) {
+                        int p = int(random() % n);
+                        int q = min(n - 1, p + 1 + int(random() % max(2, n / 10)));
+                        swap(order[p], order[q]);
+                    }
+                }
+            }
+
+            I target = I(min<Area>(total_side, (best_area - 1) / w));
+            I min_height = I((total_area + w - 1) / w);
+
+            if (trial % 3 == 0 || target < max(largest, min_height)) {
+                target = total_side;
+            } else if (trial % 4 == 2) {
+                I slack = target - max(largest, min_height);
+                target -= I(random() % (slack + 1));
+            }
+
+            maxrects(w, target, order, rule);
+            if (best_area == total_area) return;
+        }
+    }
+};
+} // namespace square_packing
+
+vector<vector<int>> pack_squares(vector<int> squares) {
+    if (squares.empty()) return {};
+
+    square_packing::Solver solver(squares);
+    solver.search();
+
+    vector<vector<int>> result;
+    result.reserve(squares.size());
+    for (const auto& p : solver.best) {
+        result.push_back({int(p.second), int(p.first)});
+    }
+    return result;
+}
+
+int main() {
+    ofstream fout(getenv("OUTPUT_PATH"));
+
+    string squares_count_temp;
+    getline(cin, squares_count_temp);
+    int squares_count = stoi(ltrim(rtrim(squares_count_temp)));
+
+    vector<int> squares(squares_count);
+    for (int i = 0; i < squares_count; ++i) {
+        string squares_item_temp;
+        getline(cin, squares_item_temp);
+        squares[i] = stoi(ltrim(rtrim(squares_item_temp)));
+    }
+
+    vector<vector<int>> result = pack_squares(squares);
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        for (size_t j = 0; j < result[i].size(); ++j) {
+            fout << result[i][j];
+            if (j != result[i].size() - 1) {
+                fout << " ";
+            }
+        }
+
+        if (i != result.size() - 1) {
+            fout << "\n";
+        }
+    }
+
+    fout << "\n";
+    fout.close();
+    return 0;
+}
+
+string ltrim(const string &str) {
+    string s(str);
+    s.erase(
+        s.begin(),
+        find_if(s.begin(), s.end(), not1(ptr_fun<int, int>(isspace)))
+    );
+    return s;
+}
+
+string rtrim(const string &str) {
+    string s(str);
+    s.erase(
+        find_if(s.rbegin(), s.rend(), not1(ptr_fun<int, int>(isspace))).base(),
+        s.end()
+    );
+    return s;
+}
